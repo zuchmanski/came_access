@@ -1,0 +1,12 @@
+{
+  "domain": "came_access",
+  "name": "CAME Access",
+  "version": "1.0.0",
+  "config_flow": true,
+  "codeowners": ["@LucaCraft89"],
+  "integration_type": "hub",
+  "iot_class": "cloud_push",
+  "documentation": "https://github.com/LucaCraft89/came_access",
+  "issue_tracker": "https://github.com/LucaCraft89/came_access/issues",
+  "requirements": []
+}

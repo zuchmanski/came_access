@@ -1,0 +1,51 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "CAME Access – Login",
+        "description": "Enter your CAME Access cloud account credentials. The integration will auto-discover your XTS7/BPT unit parameters.",
+        "data": {
+          "username": "Email address",
+          "password": "Password",
+          "local_ip": "Local IP of XTS7 unit (optional, not used for door-open)"
+        },
+        "data_description": {
+          "local_ip": "Only needed if you want the device info to show a local IP. Leave empty otherwise."
+        }
+      },
+      "pick_device": {
+        "title": "Select Device",
+        "description": "Multiple CAME Access units were found. Pick the one to control.",
+        "data": {
+          "device": "Device"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid email or password. Please check your CAME Access credentials.",
+      "cannot_connect": "Could not reach the CAME Access cloud API. Check your internet connection.",
+      "no_devices": "No compatible XTS7/BPT units found. Make sure the CAME Access app shows the unit and the invitation has been accepted.",
+      "device_not_found": "The selected device could not be found.",
+      "unknown": "Unexpected error. Check the Home Assistant logs for details."
+    },
+    "abort": {
+      "already_configured": "This CAME Access account is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "CAME Access Options",
+        "description": "Use 'Re-discover' to refresh SIP parameters from the cloud API (e.g. after a password change or slot reassignment).",
+        "data": {
+          "action": "Action"
+        }
+      }
+    },
+    "abort": {
+      "invalid_auth": "Re-discovery failed: invalid credentials.",
+      "rediscovery_failed": "Re-discovery failed. Check the Home Assistant logs.",
+      "device_not_found": "The device could not be found during re-discovery."
+    }
+  }
+}
