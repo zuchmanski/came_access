@@ -20,6 +20,7 @@ Sends a SIP `MESSAGE` command over TLS directly to the CAME SIP proxy to trigger
 - **486 Busy handling** — if the unit is in a call, the integration retries automatically (configurable retries + delay)
 - **Diagnostic sensors** that surface the resolved SIP parameters for easy troubleshooting
 - **Re-discovery option** in the integration options to refresh all parameters after a password change or Mobile App slot reassignment
+- **Local SIP** used to send the open command to reduce the delay
 
 ---
 
@@ -207,6 +208,13 @@ The integration implements the same protocol as the CAME Access mobile app:
 6. **SIP REGISTER + MESSAGE over TLS (port 5061)** — authenticates with Digest MD5 and delivers the `OPEN_DOOR` XML payload
 
 The SIP digest password is `BptX1pM0b1l3` + the raw SIP password returned by the API. The `Subject` header encodes the source/destination BPT addresses and slot label in the format used by the app.
+
+---
+
+## To-Do (seeking help from communnity)
+
+1. [ ] **Add** AUX support (i have no way to test it)
+2. [ ] **Test** on other Units like the 5 inch variant (also no way to test it)
 
 ---
 
