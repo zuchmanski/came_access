@@ -210,6 +210,16 @@ The SIP digest password is `BptX1pM0b1l3` + the raw SIP password returned by the
 
 ---
 
+## Background & Credits
+
+This integration was born out of the need to control **CAME XTS7 X1 Wi-Fi** units (and similar CAME Access / old VideoEntry compatible hardware) from Home Assistant — including older installations, condominium units not connected to the internet, or units that are CAME Access capable but have never been cloud-paired.
+
+The protocol was reverse engineered from the official **CAME Access** app using [mitmproxy](https://mitmproxy.org/) and Frida to intercept the full API and SIP flow.
+
+SIP logic and overall integration structure were inspired by the excellent [**came_connect**](https://github.com/sdeagh/came_connect) integration by [@sdeagh](https://github.com/sdeagh) — go give it a star if you have a standard CAME Connect installation.
+
+---
+
 ## License
 
 [MIT](LICENSE)
