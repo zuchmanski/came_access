@@ -30,6 +30,7 @@ from .api import (
     DiscoveredDevice,
 )
 from .const import (
+    CONF_AUX_OUTPUTS,
     CONF_DEVICE_ID,
     CONF_DEVICE_NAME,
     CONF_DEVICE_TOKEN,
@@ -61,6 +62,12 @@ STEP_USER_SCHEMA = vol.Schema(
                 autocomplete="current-password",
             )
         ),
+        vol.Required(CONF_SITE_ID): selector.TextSelector(
+            selector.TextSelectorConfig(type=selector.TextSelectorType.TEXT)
+        ),
+        vol.Required(CONF_SIP_PASSWORD): selector.TextSelector(
+            selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
+        ),
         vol.Optional(CONF_LOCAL_IP, default=""): selector.TextSelector(
             selector.TextSelectorConfig(type=selector.TextSelectorType.TEXT)
         ),
@@ -86,6 +93,7 @@ def _device_to_entry_data(username: str, password: str, local_ip: str, dev: Disc
         CONF_DEVICE_TOKEN: cfg.device_token,
         CONF_SUBJECT_LABEL: cfg.subject_label,
         CONF_PROXY_HOST: cfg.proxy_host,
+        CONF_AUX_OUTPUTS: dev.aux_outputs,
     }
 
 
@@ -97,6 +105,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     def __init__(self) -> None:
         self._username: str = ""
         self._password: str = ""
+        self._sip_password: str = ""
+        self._site_id: str = ""
         self._local_ip: str = ""
         self._discovered: list[DiscoveredDevice] = []
 
@@ -108,8 +118,19 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             password = user_input[CONF_PASSWORD]
             local_ip = user_input.get(CONF_LOCAL_IP, "").strip()
 
-            # Prevent duplicate entries for the same account
-            await self.async_set_unique_id(username.lower())
+            try:
+                site_id = int(str(user_input[CONF_SITE_ID]).strip())
+            except (ValueError, TypeError):
+                errors["base"] = "invalid_site_id"
+                return self.async_show_form(
+                    step_id="user",
+                    data_schema=STEP_USER_SCHEMA,
+                    errors=errors,
+                )
+            sip_password = user_input[CONF_SIP_PASSWORD]
+
+            # Prevent duplicate entries for the same account + site
+            await self.async_set_unique_id(f"{username.lower()}:{site_id}")
             self._abort_if_unique_id_configured()
 
             session = async_get_clientsession(self.hass)
@@ -126,7 +147,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "unknown"
             else:
                 try:
-                    devices = await client.async_discover_devices()
+                    devices = await client.async_discover_site_devices(site_id, sip_password)
                 except CameAccessDiscoveryError as exc:
                     _LOGGER.warning("CAME Access discovery failed: %s", exc)
                     errors["base"] = "no_devices"
@@ -138,6 +159,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 else:
                     self._username = username
                     self._password = password
+                    self._sip_password = sip_password
+                    self._site_id = site_id
                     self._local_ip = local_ip
                     self._discovered = devices
 
@@ -235,6 +258,11 @@ class CameAccessOptionsFlow(config_entries.OptionsFlow):
         entry = self.config_entry
         username = entry.data[CONF_USERNAME]
         password = entry.data[CONF_PASSWORD]
+        sip_password = entry.data[CONF_SIP_PASSWORD]
+        try:
+            site_id = int(str(entry.data[CONF_SITE_ID]).strip())
+        except (ValueError, TypeError):
+            return self.async_abort(reason="invalid_site_id")
         local_ip = entry.data.get(CONF_LOCAL_IP, "")
         target_device_id = int(entry.data[CONF_DEVICE_ID])
 
@@ -243,7 +271,7 @@ class CameAccessOptionsFlow(config_entries.OptionsFlow):
 
         try:
             await client.async_login()
-            devices = await client.async_discover_devices()
+            devices = await client.async_discover_site_devices(site_id, sip_password)
         except CameAccessAuthError:
             return self.async_abort(reason="invalid_auth")
         except (CameAccessApiError, CameAccessDiscoveryError) as exc:

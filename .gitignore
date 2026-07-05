@@ -1,0 +1,24 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Local debug / dev tools that shouldn't ship in the integration
+debug_discovery.py
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment and secrets
+.env
+.env.*
+
+# macOS / editor artifacts
+.DS_Store
+*.swp
+*.swo
+*.egg-info/
+dist/
+build/

@@ -9,6 +9,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import CameAccessClient, DoorConfig
 from .const import (
+    CONF_AUX_OUTPUTS,
     CONF_DEVICE_ID,
     CONF_DEVICE_TOKEN,
     CONF_KEYCODE,
@@ -55,7 +56,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # as having a setup error via the standard exception handling.
         raise
 
-    # Reconstruct the DoorConfig from stored data (no re-discovery needed)
+    # Reconstruct the DoorConfig from stored data (no re-discovery needed).
+    # device_token is optional (absent for /plants-discovered devices; only
+    # used by the best-effort xipregister wake-up).
     door_config = DoorConfig(
         sip_user=entry.data[CONF_SIP_USER],
         keycode=entry.data[CONF_KEYCODE],
@@ -63,7 +66,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         panel_addr=entry.data[CONF_PANEL_ADDR],
         target_user=entry.data[CONF_TARGET_USER],
         sip_password=entry.data[CONF_SIP_PASSWORD],
-        device_token=entry.data[CONF_DEVICE_TOKEN],
+        device_token=entry.data.get(CONF_DEVICE_TOKEN, ""),
         subject_label=entry.data[CONF_SUBJECT_LABEL],
         proxy_host=entry.data.get(CONF_PROXY_HOST, SIP_PROXY_HOST_DEFAULT),
         proxy_port=SIP_PROXY_PORT,
@@ -73,6 +76,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "client": client,
         "door_config": door_config,
         "device_id": entry.data[CONF_DEVICE_ID],
+        "aux_outputs": entry.data.get(CONF_AUX_OUTPUTS, []),
     }
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

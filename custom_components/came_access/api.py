@@ -18,7 +18,7 @@ import socket
 import ssl
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import aiohttp
@@ -29,10 +29,13 @@ from .const import (
     BUSY_RETRY_DELAY,
     CAME_CLIENT_ID,
     CAME_CLIENT_SECRET,
+    FEATURE_AUX_MAX,
+    FEATURE_AUX_MIN,
     FEATURE_MOBILE_APP,
     HTTP_TIMEOUT,
     MODULE_ENTRY_PANEL,
     MODULE_UNIT,
+    SETTING_AUX_ICON,
     SETTING_ENABLED,
     SETTING_PANEL_ADDR,
     SETTING_SIP_USER,
@@ -107,6 +110,8 @@ class DiscoveredDevice:
     site_id: int
     name: str
     door_config: DoorConfig
+    # AUX outputs on the entry panel: [{"code": int, "label": str, "icon": str}]
+    aux_outputs: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -117,6 +122,12 @@ class ActionResult:
     message_status: str = ""
     retries_used: int = 0
     error: str = ""
+    # Runtime diagnostics (populated by async_open_door / async_trigger_aux):
+    xipregister_status: str = ""   # "200", "skipped (no token)", "error: …"
+    proxy_host: str = ""           # SIP proxy IP actually used for this command
+    proxy_resolved: str = ""       # freshly-resolved proxy IP (may differ → stale)
+    elapsed_ms: int = 0            # wall-clock of the whole command
+    kind: str = ""                 # "open_door" or "aux N"
 
 
 # ─── Private helpers ──────────────────────────────────────────────────────────
@@ -481,6 +492,11 @@ class CameAccessClient:
         self._expires_at: float = 0.0
         self._token_lock = asyncio.Lock()
 
+        # Runtime diagnostics
+        self._login_count: int = 0
+        self._refresh_count: int = 0
+        self.last_action: ActionResult | None = None
+
     # ── OAuth ──────────────────────────────────────────────────────────────────
 
     async def async_login(self) -> None:
@@ -513,6 +529,7 @@ class CameAccessClient:
                 if resp.status != 200 or "access_token" not in js:
                     raise CameAccessApiError(f"OAuth token endpoint returned {resp.status}: {js}")
                 self._store_tokens(js)
+                self._login_count += 1
         except aiohttp.ClientError as exc:
             raise CameAccessApiError(f"Network error during login: {exc}") from exc
 
@@ -545,6 +562,7 @@ class CameAccessClient:
                 if resp.status != 200 or "access_token" not in js:
                     raise CameAccessApiError(f"Token refresh returned {resp.status}: {js}")
                 self._store_tokens(js)
+                self._refresh_count += 1
         except aiohttp.ClientError as exc:
             raise CameAccessApiError(f"Network error during token refresh: {exc}") from exc
 
@@ -565,6 +583,22 @@ class CameAccessClient:
             if not self._token_valid():
                 await self._async_refresh()
         return self._access_token  # type: ignore[return-value]
+
+    def token_diagnostics(self) -> dict[str, Any]:
+        """Non-secret snapshot of the OAuth token state for diagnostics."""
+        secs = int(self._expires_at - time.monotonic()) if self._access_token else 0
+        return {
+            "has_access_token": bool(self._access_token),
+            "has_refresh_token": bool(self._refresh_token),
+            "token_valid": self._token_valid(),
+            "expires_in_seconds": secs,
+            "login_count": self._login_count,
+            "refresh_count": self._refresh_count,
+        }
+
+    async def async_check_proxy(self, sip_domain: str) -> str:
+        """Publicly re-resolve the SIP proxy IP for the given domain."""
+        return await self._resolve_proxy_host(sip_domain)
 
     # ── REST helpers ───────────────────────────────────────────────────────────
 
@@ -695,6 +729,74 @@ class CameAccessClient:
 
         return devices
 
+    async def async_discover_site_devices(
+        self, site_id: int | str, sip_password: str
+    ) -> list[DiscoveredDevice]:
+        """
+        Discover devices for one site via the Bearer-only /plants endpoint.
+
+        Unlike the legacy /sipaccounts→/sites→/devices chain, this needs NO
+        device token. The SIP password is not present in the payload and must
+        be supplied by the user (sip_password).
+
+          /api/evo/v1/sites/{id}/plants  → full module/feature/SipAccount data
+
+        The mobile-app slot belonging to the logged-in user is chosen by
+        matching SipAccount.UserEmail against the account username.
+        """
+        plants = await self._fetch_plants(site_id)
+        if not plants:
+            raise CameAccessDiscoveryError(
+                f"No plants (devices) found for site {site_id}. "
+                "Check the Site ID matches the one shown in the CAME Access web app."
+            )
+
+        devices: list[DiscoveredDevice] = []
+        for plant in plants:
+            dev_id = plant.get("DeviceId") or plant.get("Id")
+            if dev_id is None:
+                continue
+            try:
+                door_cfg, aux_outputs = _extract_plant_config(
+                    plant,
+                    login_email=self._username,
+                    sip_password=sip_password,
+                )
+            except CameAccessDiscoveryError as exc:
+                _LOGGER.debug("Skipping plant %s: %s", dev_id, exc)
+                continue
+
+            proxy_host = await self._resolve_proxy_host(door_cfg.sip_domain)
+            door_cfg = replace(door_cfg, proxy_host=proxy_host, proxy_port=SIP_PROXY_PORT)
+
+            dev_name = str(
+                plant.get("AliasName") or plant.get("Name") or f"CAME Device {dev_id}"
+            ).strip()
+
+            devices.append(DiscoveredDevice(
+                device_id=int(dev_id),
+                site_id=int(site_id),
+                name=dev_name,
+                door_config=door_cfg,
+                aux_outputs=aux_outputs,
+            ))
+
+        if not devices:
+            raise CameAccessDiscoveryError(
+                f"No compatible XTS7/BPT device parsed from site {site_id}. "
+                "Ensure your account has an enabled Mobile App slot on the unit."
+            )
+        return devices
+
+    async def _fetch_plants(self, site_id: int | str) -> list[dict]:
+        status, js = await self._get(f"/evo/v1/sites/{site_id}/plants")
+        if status != 200:
+            raise CameAccessApiError(f"/sites/{site_id}/plants returned {status}: {js}")
+        plants = _coerce_list(js)
+        if not plants and isinstance(js, list):
+            plants = [i for i in js if isinstance(i, dict)]
+        return plants
+
     async def _fetch_sip_accounts(self) -> list[dict]:
         status, js = await self._get("/evo/v1/sipaccounts")
         if status != 200:
@@ -743,12 +845,19 @@ class CameAccessClient:
 
     # ── Cloud pre-notify (xipregister) ────────────────────────────────────────
 
-    async def _async_xipregister(self, cfg: DoorConfig) -> None:
+    async def _async_xipregister(self, cfg: DoorConfig) -> str:
         """
         Tell CAME's push service that HA is about to make a SIP call.
         This wakes up the XTS7 so it's ready to receive the MESSAGE.
         Non-fatal if it fails.
+
+        Returns a short status string for diagnostics.
         """
+        if not cfg.device_token:
+            # Without a push token the wake-up can't reach the unit. This is the
+            # usual reason a unit "stops responding after a while" (it sleeps).
+            _LOGGER.debug("xipregister skipped: no device token configured")
+            return "skipped (no device token)"
         try:
             status, js = await self._get(
                 "/push/xipregister",
@@ -765,10 +874,12 @@ class CameAccessClient:
             )
             if status != 200:
                 _LOGGER.warning("xipregister returned %s (continuing with SIP anyway)", status)
-            else:
-                _LOGGER.debug("xipregister OK for sip_user=%s", cfg.sip_user)
+                return f"HTTP {status}"
+            _LOGGER.debug("xipregister OK for sip_user=%s", cfg.sip_user)
+            return "200 OK"
         except Exception as exc:
             _LOGGER.warning("xipregister failed (%s), continuing with SIP anyway", exc)
+            return f"error: {exc}"
 
     # ── Door / AUX commands ───────────────────────────────────────────────────
 
@@ -781,19 +892,56 @@ class CameAccessClient:
           2. SIP REGISTER + MESSAGE over TLS
           3. If 486 Busy: wait BUSY_RETRY_DELAY s, retry up to BUSY_MAX_RETRIES times
         """
-        await self._async_xipregister(cfg)
         xml = _build_open_door_xml(cfg.src_addr, cfg.panel_addr)
         subject = _build_subject(cfg.src_addr, cfg.panel_addr, cfg.subject_label)
-        return await self._run_with_busy_retry(cfg, xml, subject)
+        return await self._run_command(cfg, xml, subject, kind="open_door")
 
     async def async_trigger_aux(self, cfg: DoorConfig, aux_code: int) -> ActionResult:
         """Trigger an AUX output on the entry panel."""
-        await self._async_xipregister(cfg)
         xml = _build_aux_xml(cfg.src_addr, cfg.panel_addr, aux_code)
         subject = _build_subject(cfg.src_addr, cfg.panel_addr, cfg.subject_label)
-        result = await self._run_with_busy_retry(cfg, xml, subject)
-        result.retries_used = result.retries_used  # pass through
-        return result
+        return await self._run_command(cfg, xml, subject, kind=f"aux {aux_code}")
+
+    async def _run_command(
+        self, cfg: DoorConfig, xml: str, subject: str, *, kind: str
+    ) -> ActionResult:
+        """
+        Shared command path (open-door / aux) with runtime diagnostics.
+
+        Records timing, the xipregister wake-up status, and re-resolves the SIP
+        proxy so a stale cached IP can be spotted. On success the result is
+        stored as ``self.last_action``; on failure a failed ActionResult is
+        stored (with the raised exception preserved for the caller).
+        """
+        started = time.monotonic()
+        xip_status = await self._async_xipregister(cfg)
+        # Re-resolve the proxy every time and CONNECT to the fresh IP. CAME
+        # rotates the proxy address, so a cached one goes stale and is a common
+        # "stops working after a while" cause. We keep the stored value too so
+        # diagnostics can flag when it drifted (proxy_resolved != proxy_host).
+        proxy_resolved = await self._resolve_proxy_host(cfg.sip_domain)
+        active_cfg = replace(cfg, proxy_host=proxy_resolved) if proxy_resolved else cfg
+        if proxy_resolved and proxy_resolved != cfg.proxy_host:
+            _LOGGER.debug(
+                "SIP proxy changed for %s: stored=%s resolved=%s (using resolved)",
+                cfg.sip_domain, cfg.proxy_host, proxy_resolved,
+            )
+
+        def _finalize(result: ActionResult) -> ActionResult:
+            result.xipregister_status = xip_status
+            result.proxy_host = cfg.proxy_host          # stored / cached
+            result.proxy_resolved = proxy_resolved       # fresh (and used)
+            result.elapsed_ms = int((time.monotonic() - started) * 1000)
+            result.kind = kind
+            self.last_action = result
+            return result
+
+        try:
+            result = await self._run_with_busy_retry(active_cfg, xml, subject)
+        except CameAccessError as exc:
+            _finalize(ActionResult(success=False, error=f"{type(exc).__name__}: {exc}"))
+            raise
+        return _finalize(result)
 
     async def _run_with_busy_retry(
         self, cfg: DoorConfig, xml: str, subject: str
@@ -827,7 +975,119 @@ class CameAccessClient:
         ) from last_exc
 
 
-# ─── Device-metadata extractor ────────────────────────────────────────────────
+# ─── Device-metadata extractors ───────────────────────────────────────────────
+
+def _enumerate_aux_outputs(plant: dict) -> list[dict]:
+    """List AUX outputs on the entry-panel module (FeatureId 8..N = Aux 1..N)."""
+    aux: list[dict] = []
+    for module in plant.get("Modules") or []:
+        if not isinstance(module, dict) or module.get("ModuleId") != MODULE_ENTRY_PANEL:
+            continue
+        for feat in module.get("Features") or []:
+            if not isinstance(feat, dict):
+                continue
+            fid = feat.get("FeatureId")
+            if not isinstance(fid, int) or not (FEATURE_AUX_MIN <= fid <= FEATURE_AUX_MAX):
+                continue
+            code = fid - FEATURE_AUX_MIN + 1  # aux_code sent in the BPT command
+            settings = _settings_map(feat.get("Settings"))
+            alias = str(feat.get("AliasName") or "").strip()
+            aux.append({
+                "code": code,
+                "label": alias or str(feat.get("Name") or f"Aux {code}"),
+                "icon": str(settings.get(SETTING_AUX_ICON, "") or ""),
+            })
+    return aux
+
+
+def _extract_plant_config(
+    plant: dict,
+    *,
+    login_email: str,
+    sip_password: str,
+) -> tuple[DoorConfig, list[dict]]:
+    """
+    Parse one plant from the Bearer-only /sites/{id}/plants payload.
+
+    Differences from the legacy /devices shape handled here:
+      - the Mobile-App slot carries a singular ``SipAccount`` (no SipPassword,
+        no DeviceToken) rather than a module-level ``SipAccounts`` list;
+      - the slot owned by the logged-in user is chosen by matching
+        ``SipAccount.UserEmail`` against the account email;
+      - ``sip_password`` is supplied out-of-band (never in the payload);
+      - there is no device token, so ``xipregister`` runs best-effort only.
+
+    Raises CameAccessDiscoveryError if required fields are absent.
+    """
+    keycode = str(plant.get("Keycode", "")).strip()
+    modules = plant.get("Modules") or []
+    if not isinstance(modules, list):
+        modules = []
+
+    panel_addr = SIP_PANEL_ADDR_DEFAULT
+    target_user = SIP_TARGET_USER_DEFAULT
+    sip_user = ""
+    src_addr = ""
+    subject_label = "Mobile App"
+    login = login_email.strip().lower()
+
+    for module in modules:
+        if not isinstance(module, dict):
+            continue
+        module_id = module.get("ModuleId")
+
+        if module_id == MODULE_ENTRY_PANEL:
+            panel_settings = _settings_map(module.get("Settings"))
+            panel_addr = panel_settings.get(SETTING_PANEL_ADDR, panel_addr)
+            target_user = panel_settings.get(SETTING_TARGET_USER, target_user)
+
+        if module_id == MODULE_UNIT:
+            for feat in module.get("Features") or []:
+                if not isinstance(feat, dict) or feat.get("FeatureId") != FEATURE_MOBILE_APP:
+                    continue
+                feat_settings = _settings_map(feat.get("Settings"))
+                if feat_settings.get(SETTING_ENABLED, "true").lower() in {"false", "0", "no"}:
+                    continue
+                slot_user = feat_settings.get(SETTING_SIP_USER, "").strip()
+                slot_src = feat_settings.get(SETTING_SRC_ADDR, "").strip()
+                if not slot_user or not slot_src:
+                    continue
+                slot_label = str(feat.get("AliasName") or feat.get("Name") or slot_user).strip()
+
+                acc = feat.get("SipAccount") or {}
+                acc_email = str(acc.get("UserEmail", "")).strip().lower() if isinstance(acc, dict) else ""
+
+                # Prefer the slot owned by the logged-in user; otherwise take
+                # the first enabled slot as a fallback.
+                if acc_email and acc_email == login:
+                    sip_user, src_addr, subject_label = slot_user, slot_src, slot_label
+                    break
+                if not sip_user:
+                    sip_user, src_addr, subject_label = slot_user, slot_src, slot_label
+
+    missing = [k for k, v in [
+        ("sip_user", sip_user),
+        ("src_addr", src_addr),
+        ("sip_password", sip_password),
+        ("keycode", keycode),
+    ] if not v]
+    if missing:
+        raise CameAccessDiscoveryError(
+            f"Plant {plant.get('Id')}: missing required fields: {', '.join(missing)}"
+        )
+
+    door_config = DoorConfig(
+        sip_user=sip_user,
+        keycode=keycode,
+        src_addr=src_addr,
+        panel_addr=panel_addr,
+        target_user=target_user,
+        sip_password=sip_password,
+        device_token="",  # not in /plants; xipregister runs best-effort
+        subject_label=subject_label,
+    )
+    return door_config, _enumerate_aux_outputs(plant)
+
 
 def _extract_door_config(
     raw_dev: dict,

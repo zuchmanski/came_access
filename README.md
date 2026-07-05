@@ -7,19 +7,20 @@
 
 A custom Home Assistant integration for controlling **CAME XTS7 / BPT** intercom and gate units via the CAME Access cloud infrastructure.
 
-Sends a SIP `MESSAGE` command over TLS directly to the CAME SIP proxy to trigger door/gate opening — the same protocol used by the official CAME Access mobile app.
+Sends a SIP `MESSAGE` command over TLS directly to the CAME SIP proxy to trigger door/gate opening and **AUX outputs** — the same protocol used by the official CAME Access mobile app.
 
 ---
 
 ## Features
 
 - **Open door / gate** from Home Assistant with a single button press
-- **Auto-discovery** of all SIP and BPT parameters from the cloud API — no manual digging required
+- **AUX outputs** — one button per configured AUX output on the entry panel (Aux 1–N, e.g. gate, lights), each sending a BPT `AUX_COMMAND` over SIP
+- **Discovery** of all SIP and BPT parameters via the cloud API's Bearer-only `plants` endpoint (SIP username, BPT addresses, AUX outputs, SIP proxy host)
 - **Transparent OAuth2** login with automatic token refresh
 - **Cloud wake-up** (`xipregister`) before each SIP command so the XTS7 is ready to receive
 - **486 Busy handling** — if the unit is in a call, the integration retries automatically (configurable retries + delay)
 - **Diagnostic sensors** that surface the resolved SIP parameters for easy troubleshooting
-- **Re-discovery option** in the integration options to refresh all parameters after a password change or Mobile App slot reassignment
+- **Re-discovery option** in the integration options to refresh all parameters after a Mobile App slot reassignment
 - **Local SIP** used to send the open command to reduce the delay
 
 ---
@@ -68,6 +69,7 @@ Restart Home Assistant, then add the integration via **Settings → Devices & Se
 - Home Assistant 2024.1 or newer
 - A CAME Access account (same email/password as the mobile app)
 - The Mobile App slot must be **activated** on the XTS7 unit — done once via the CAME Access app or the XTS7 web interface
+- Your **Site ID** (from the CAME Access web app URL) and your Mobile App slot's **SIP password** — see [Configuration](#configuration)
 
 ---
 
@@ -79,18 +81,27 @@ You will be asked for:
 |---|---|
 | **Email address** | Your CAME Access account email |
 | **Password** | Your CAME Access account password |
+| **Site ID** | The numeric site ID from the CAME Access web app (the number in the `cameconnect.net` site URL) |
+| **SIP password** | The SIP password for your Mobile App slot (see below) |
 | **Local IP** *(optional)* | LAN IP of the XTS7 unit — stored for reference only, not used for door-open |
 
-The integration logs in to the CAME Access cloud API and automatically discovers:
+Once you submit, the integration logs in to the CAME Access cloud API and, for the given site, discovers via the Bearer-only `/api/evo/v1/sites/{id}/plants` endpoint:
 
-- The SIP username, domain, and password for your Mobile App slot
-- The BPT source and panel addresses
+- The SIP username and BPT source address for **your** Mobile App slot (matched to your account email)
+- The BPT panel and target addresses
+- The list of **AUX outputs** configured on the entry panel
 - The SIP proxy host for your unit
-- The FCM device token needed to wake the unit before calling
 
-If your account has multiple XTS7 units you will be asked to pick one.
+If the site has multiple XTS7 units you will be asked to pick one.
 
-**Nothing else to configure.** No mitmproxy, no app extraction, no manual credential hunting.
+### Why Site ID and SIP password are entered manually
+
+The CAME Access cloud API **no longer returns the SIP password or an FCM device token** for third-party callers, and the site-list endpoint requires a device token that is not available. The integration therefore uses the web dashboard's `plants` endpoint (which needs only the Bearer token) and asks you to supply:
+
+- **Site ID** — open your site in the CAME Access web app at [cameconnect.net](https://cameconnect.net/); the number in the URL is the Site ID.
+- **SIP password** — the password for your Mobile App slot. If you don't know it, it can be recovered from the app's traffic (e.g. via [mitmproxy](https://mitmproxy.org/)); the digest password used on the wire is `BptX1pM0b1l3` + this value.
+
+> **Note:** a device (FCM) token is *not* required. It is only used by the optional `xipregister` wake-up, which fails soft — door-open and AUX commands are delivered by SIP regardless.
 
 ---
 
@@ -110,13 +121,14 @@ The integration uses the same OAuth2 client embedded in the official app and the
 
 ## Entities
 
-### Button
+### Buttons
 
 | Entity | Description |
 |---|---|
 | `button.<device_name>_open_door` | Sends the `OPEN_DOOR` BPT command via SIP |
+| `button.<device_name>_<aux_label>` | One per AUX output on the entry panel — sends the `AUX_COMMAND` BPT command via SIP. Named after the AUX alias set in the CAME Access app (e.g. *Brama*), falling back to `Aux N`. Icons are mapped from the app icon (gate → `mdi:gate`, light → `mdi:lightbulb`, …). |
 
-Extra state attributes exposed on the button:
+Extra state attributes exposed on the **Open Door** button:
 
 | Attribute | Description |
 |---|---|
@@ -131,6 +143,8 @@ Extra state attributes exposed on the button:
 | `panel_addr` | BPT panel address |
 | `subject_label` | Mobile App slot label |
 | `proxy_host` | Resolved SIP proxy IP |
+
+Each **AUX** button exposes: `aux_code` (the BPT AUX index that is sent), `last_pressed`, `last_message_status`, and `last_error`.
 
 ### Diagnostic Sensors
 
@@ -157,10 +171,10 @@ The XTS7 returned SIP **486 Busy Here** — another call is active on the unit (
 
 SIP digest authentication failed. Most likely causes:
 
+- The **SIP password** entered during setup is wrong (this is the most common cause — it is entered manually)
 - The Mobile App slot was **disabled or removed** from the XTS7 unit
-- The CAME Access account **password was changed**
 
-Fix: go to **Settings → Devices & Services → CAME Access → Configure → Re-discover device parameters from cloud API**.
+Fix: remove and re-add the integration with the correct **SIP password**. If the slot addresses changed, use **Settings → Devices & Services → CAME Access → Configure → Re-discover device parameters from cloud API** to refresh them.
 
 ### "Could not reach the SIP proxy"
 
@@ -201,20 +215,22 @@ CAME door open succeeded for … (retries=0)
 The integration implements the same protocol as the CAME Access mobile app:
 
 1. **OAuth2 password grant** against `https://app.cameconnect.net/api/oauth/token`
-2. **`/api/evo/v1/sipaccounts`** — resolves device token and keycode for this account
-3. **`/api/evo/v1/sites/{id}/devices`** — retrieves module/feature trees to extract the Mobile App slot SIP username, BPT addresses, and SIP password
-4. **`/api/evo/v1/checkdomainip`** — resolves which IP the SIP proxy runs on for this unit's domain
-5. **`/api/push/xipregister`** — signals the unit to wake up and register with the proxy
-6. **SIP REGISTER + MESSAGE over TLS (port 5061)** — authenticates with Digest MD5 and delivers the `OPEN_DOOR` XML payload
+2. **`/api/evo/v1/sites/{id}/plants`** — Bearer-only endpoint that returns the module/feature tree for the site. The integration extracts the Mobile App slot (matched to your account email) for the SIP username and BPT source address, the entry-panel addresses, and the list of AUX outputs. The SIP password is supplied by you (the API no longer returns it).
+3. **`/api/evo/v1/checkdomainip`** — resolves which IP the SIP proxy runs on for this unit's domain
+4. **`/api/push/xipregister`** — best-effort signal to wake the unit and register with the proxy (skipped/soft-failed when no device token is available)
+5. **SIP REGISTER + MESSAGE over TLS (port 5061)** — authenticates with Digest MD5 and delivers the `OPEN_DOOR` or `AUX_COMMAND` XML payload
 
-The SIP digest password is `BptX1pM0b1l3` + the raw SIP password returned by the API. The `Subject` header encodes the source/destination BPT addresses and slot label in the format used by the app.
+The SIP digest password is `BptX1pM0b1l3` + your SIP password. The AUX command carries `<type>AUX_COMMAND</type>` with an `<aux_code>` (the Aux index, 1–N) plus the source/panel BPT addresses. The `Subject` header encodes the source/destination BPT addresses and slot label in the format used by the app.
+
+> The legacy discovery chain (`/sipaccounts` → `/sites/{id}/devices?dt=…`) is retained in `api.py` but is no longer used by the config flow, since the API stopped returning a usable device token and SIP password to third-party callers.
 
 ---
 
 ## To-Do (seeking help from communnity)
 
-1. [ ] **Add** AUX support (i have no way to test it)
+1. [x] **Add** AUX support — one button per AUX output, sending a BPT `AUX_COMMAND` over SIP (tested on an XTS7 X1)
 2. [ ] **Test** on other Units like the 5 inch variant (also no way to test it)
+3. [ ] **Auto-discover the Site ID** — currently entered manually; the web dashboard's site-list call would remove this step
 
 ---
 

@@ -46,11 +46,17 @@ FEATURE_MOBILE_APP = 4    # Mobile App slot feature
 FEATURE_OPEN_DOOR = 2     # Open door feature
 FEATURE_LIVE_VIEW = 1
 
+# AUX outputs on the entry-panel module are FeatureId 8..N (= Aux 1..N).
+# aux_code (sent in the BPT AUX_COMMAND) = FeatureId - FEATURE_AUX_MIN + 1.
+FEATURE_AUX_MIN = 8
+FEATURE_AUX_MAX = 99
+
 SETTING_SIP_USER = 1      # SIP username for mobile slot
 SETTING_SRC_ADDR = 2      # BPT L3 source address
 SETTING_TARGET_USER = 3   # SIP target user (panel)
 SETTING_PANEL_ADDR = 4    # BPT panel address
 SETTING_ENABLED = 5       # Slot enabled flag
+SETTING_AUX_ICON = 6      # Icon filename for an AUX output (e.g. "slidinggate.png")
 
 # ─── Config entry keys (stored in entry.data after discovery) ────────────────
 CONF_USERNAME = "username"
@@ -67,9 +73,10 @@ CONF_SRC_ADDR = "src_addr"           # e.g. "00e70003"
 CONF_PANEL_ADDR = "panel_addr"       # e.g. "00e00000"
 CONF_TARGET_USER = "target_user"     # e.g. "00800000000"
 CONF_SIP_PASSWORD = "sip_password"   # e.g. "IgVbwSVWtrwMHbJ2"
-CONF_DEVICE_TOKEN = "device_token"   # FCM push token
+CONF_DEVICE_TOKEN = "device_token"   # FCM push token (optional; xipregister only)
 CONF_SUBJECT_LABEL = "subject_label" # Mobile App slot label
 CONF_PROXY_HOST = "proxy_host"       # resolved SIP proxy IP
+CONF_AUX_OUTPUTS = "aux_outputs"     # discovered AUX outputs [{code,label,icon}]
 
 # ─── Busy / retry ─────────────────────────────────────────────────────────────
 BUSY_RETRY_DELAY = 6     # seconds between retries when unit returns 486

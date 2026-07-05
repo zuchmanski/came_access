@@ -3,13 +3,17 @@
     "step": {
       "user": {
         "title": "CAME Access – Login",
-        "description": "Enter your CAME Access cloud account credentials. The integration will auto-discover your XTS7/BPT unit parameters.",
+        "description": "Enter your CAME Access cloud account credentials, the Site ID, and the SIP password. The integration will discover your XTS7/BPT unit and AUX outputs.",
         "data": {
           "username": "Email address",
           "password": "Password",
+          "site_id": "Site ID",
+          "sip_password": "SIP password",
           "local_ip": "Local IP of XTS7 unit (optional, not used for door-open)"
         },
         "data_description": {
+          "site_id": "The numeric site ID from the CAME Access web app (e.g. the number in the cameconnect.net site URL).",
+          "sip_password": "The SIP password for your Mobile App slot. This is no longer returned by the cloud API, so it must be entered manually.",
           "local_ip": "Only needed if you want the device info to show a local IP. Leave empty otherwise."
         }
       },
@@ -26,6 +30,7 @@
       "cannot_connect": "Could not reach the CAME Access cloud API. Check your internet connection.",
       "no_devices": "No compatible XTS7/BPT units found. Make sure the CAME Access app shows the unit and the invitation has been accepted.",
       "device_not_found": "The selected device could not be found.",
+      "invalid_site_id": "Site ID must be a number.",
       "unknown": "Unexpected error. Check the Home Assistant logs for details."
     },
     "abort": {
@@ -45,7 +50,8 @@
     "abort": {
       "invalid_auth": "Re-discovery failed: invalid credentials.",
       "rediscovery_failed": "Re-discovery failed. Check the Home Assistant logs.",
-      "device_not_found": "The device could not be found during re-discovery."
+      "device_not_found": "The device could not be found during re-discovery.",
+      "invalid_site_id": "The stored Site ID is not a valid number. Remove and re-add the integration."
     }
   }
 }

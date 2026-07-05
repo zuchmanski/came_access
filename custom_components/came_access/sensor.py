@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
+from datetime import timedelta
 
 from homeassistant.components.sensor import (
     SensorEntity,
@@ -21,6 +23,48 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# Poll the runtime diagnostic sensors every 30s (token countdown + last action).
+SCAN_INTERVAL = timedelta(seconds=30)
+
+
+def _last(client: CameAccessClient, attr: str, default="unknown"):
+    la = client.last_action
+    if la is None:
+        return default
+    val = getattr(la, attr, default)
+    return default if val in (None, "") else val
+
+
+# (key, name, icon, unit, value_fn) — value_fn reads live state off the client.
+_RUNTIME_SENSORS: list[tuple] = [
+    ("last_command", "Last Command", "mdi:gesture-tap-button", None,
+     lambda c: _last(c, "kind")),
+    ("last_result", "Last Command Result", "mdi:check-circle-outline", None,
+     lambda c: "unknown" if c.last_action is None else ("success" if c.last_action.success else "failed")),
+    ("last_error", "Last Command Error", "mdi:alert-circle-outline", None,
+     lambda c: _last(c, "error", default="none")),
+    ("last_xipregister", "Last Wake-up (xipregister)", "mdi:bell-ring-outline", None,
+     lambda c: _last(c, "xipregister_status")),
+    ("last_register", "Last SIP Register", "mdi:login", None,
+     lambda c: _last(c, "register_status")),
+    ("last_message", "Last SIP Message", "mdi:message-arrow-right-outline", None,
+     lambda c: _last(c, "message_status")),
+    ("last_retries", "Last Busy Retries", "mdi:reload", None,
+     lambda c: 0 if c.last_action is None else c.last_action.retries_used),
+    ("last_duration", "Last Command Duration", "mdi:timer-outline", "ms",
+     lambda c: None if c.last_action is None else c.last_action.elapsed_ms),
+    ("proxy_live", "SIP Proxy (last resolved)", "mdi:server-network", None,
+     lambda c: _last(c, "proxy_resolved")),
+    ("proxy_stale", "SIP Proxy Stale", "mdi:alert-decagram-outline", None,
+     lambda c: "unknown" if c.last_action is None
+     else str(bool(c.last_action.proxy_resolved) and c.last_action.proxy_resolved != c.last_action.proxy_host)),
+    ("token_expires_in", "Token Expires In", "mdi:timer-lock-outline", "s",
+     lambda c: c.token_diagnostics()["expires_in_seconds"]),
+    ("token_valid", "Token Valid", "mdi:key-outline", None,
+     lambda c: str(c.token_diagnostics()["token_valid"])),
+]
+
 
 _SENSOR_DESCRIPTIONS: list[SensorEntityDescription] = [
     SensorEntityDescription(
@@ -92,18 +136,31 @@ async def async_setup_entry(
         "subject_label": door_config.subject_label,
     }
 
-    async_add_entities(
-        [
-            CameAccessDiagnosticSensor(
-                description=desc,
-                native_value=values.get(desc.key, "unknown"),
-                device_info=device_info,
-                device_id=device_id,
-            )
-            for desc in _SENSOR_DESCRIPTIONS
-        ],
-        update_before_add=False,
+    entities: list[SensorEntity] = [
+        CameAccessDiagnosticSensor(
+            description=desc,
+            native_value=values.get(desc.key, "unknown"),
+            device_info=device_info,
+            device_id=device_id,
+        )
+        for desc in _SENSOR_DESCRIPTIONS
+    ]
+
+    entities.extend(
+        CameAccessRuntimeSensor(
+            key=key,
+            name=name,
+            icon=icon,
+            unit=unit,
+            value_fn=value_fn,
+            client=client,
+            device_info=device_info,
+            device_id=device_id,
+        )
+        for key, name, icon, unit, value_fn in _RUNTIME_SENSORS
     )
+
+    async_add_entities(entities, update_before_add=False)
 
 
 class CameAccessDiagnosticSensor(SensorEntity):
@@ -123,3 +180,39 @@ class CameAccessDiagnosticSensor(SensorEntity):
         self._attr_native_value = native_value
         self._attr_device_info = device_info
         self._attr_unique_id = f"came_access_{device_id}_{description.key}"
+
+
+class CameAccessRuntimeSensor(SensorEntity):
+    """A polled diagnostic sensor reflecting live client state (last command,
+    token status, resolved proxy). Value is computed on each read."""
+
+    _attr_has_entity_name = True
+    _attr_should_poll = True
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(
+        self,
+        key: str,
+        name: str,
+        icon: str,
+        unit: str | None,
+        value_fn: Callable[[CameAccessClient], object],
+        client: CameAccessClient,
+        device_info: DeviceInfo,
+        device_id: str,
+    ) -> None:
+        self._attr_name = name
+        self._attr_icon = icon
+        self._attr_native_unit_of_measurement = unit
+        self._value_fn = value_fn
+        self._client = client
+        self._attr_device_info = device_info
+        self._attr_unique_id = f"came_access_{device_id}_{key}"
+
+    @property
+    def native_value(self):
+        try:
+            return self._value_fn(self._client)
+        except Exception as exc:  # a diagnostic sensor must never break the platform
+            _LOGGER.debug("Error computing sensor %s: %s", self._attr_unique_id, exc)
+            return None
