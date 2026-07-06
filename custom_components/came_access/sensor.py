@@ -180,6 +180,7 @@ class CameAccessDiagnosticSensor(SensorEntity):
         self._attr_native_value = native_value
         self._attr_device_info = device_info
         self._attr_unique_id = f"came_access_{device_id}_{description.key}"
+        self._attr_icon = description.icon
 
 
 class CameAccessRuntimeSensor(SensorEntity):
