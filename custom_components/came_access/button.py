@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 
 from homeassistant.components.button import ButtonEntity
@@ -40,6 +41,8 @@ _AUX_ICON_MAP = {
 }
 _AUX_ICON_DEFAULT = "mdi:flash"
 
+_GENERIC_AUX_LABEL_RE = re.compile(r"^Aux\s+\d+$", re.IGNORECASE)
+
 
 def _aux_icon(icon_name: str) -> str:
     return _AUX_ICON_MAP.get((icon_name or "").lower(), _AUX_ICON_DEFAULT)
@@ -72,16 +75,18 @@ async def async_setup_entry(
         if not isinstance(aux, dict) or "code" not in aux:
             _LOGGER.warning("Skipping malformed aux output: %s", aux)
             continue
+        aux_label = str(aux.get("label") or f"Aux {aux['code']}")
         entities.append(
             CameAuxButton(
                 client=client,
                 door_config=door_config,
                 aux_code=int(aux["code"]),
-                aux_label=str(aux.get("label") or f"Aux {aux['code']}"),
+                aux_label=aux_label,
                 aux_icon=_aux_icon(aux.get("icon", "")),
                 device_id=device_id,
                 device_name=device_name,
                 keycode=keycode,
+                enabled_by_default=not _GENERIC_AUX_LABEL_RE.match(aux_label),
             )
         )
 
@@ -220,6 +225,7 @@ class CameAuxButton(ButtonEntity):
         device_id: str,
         device_name: str,
         keycode: str,
+        enabled_by_default: bool = True,
     ) -> None:
         self._client = client
         self._door_config = door_config
@@ -228,6 +234,7 @@ class CameAuxButton(ButtonEntity):
 
         self._attr_name = aux_label
         self._attr_icon = aux_icon
+        self._attr_entity_registry_enabled_default = enabled_by_default
         self._attr_unique_id = f"came_access_aux_{device_id}_{aux_code}"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, device_id)},
