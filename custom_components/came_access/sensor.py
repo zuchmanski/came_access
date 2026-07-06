@@ -94,7 +94,7 @@ _SENSOR_DESCRIPTIONS: list[SensorEntityDescription] = [
     SensorEntityDescription(
         key="panel_addr",
         name="BPT Panel Address",
-        icon="mdi:intercom",
+        icon="mdi:door",
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     SensorEntityDescription(
