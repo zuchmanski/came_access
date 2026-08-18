@@ -17,9 +17,10 @@ Sends a SIP `MESSAGE` command over TLS directly to the CAME SIP proxy to trigger
 - **AUX outputs** — one button per configured AUX output on the entry panel (Aux 1–N, e.g. gate, lights), each sending a BPT `AUX_COMMAND` over SIP
 - **Discovery** of all SIP and BPT parameters via the cloud API's Bearer-only `plants` endpoint (SIP username, BPT addresses, AUX outputs, SIP proxy host)
 - **Transparent OAuth2** login with automatic token refresh
-- **Cloud wake-up** (`xipregister`) before each SIP command so the XTS7 is ready to receive
+- **Best-effort cloud wake-up** (`xipregister`) before each SIP command — soft-fails when no device token is available, SIP delivery works regardless
 - **486 Busy handling** — if the unit is in a call, the integration retries automatically (configurable retries + delay)
-- **Diagnostic sensors** that surface the resolved SIP parameters for easy troubleshooting
+- **Diagnostic sensors** — static SIP parameters plus live state (last command, SIP statuses, token expiry, stale-proxy detection), and a downloadable diagnostics snapshot
+- **Fresh SIP proxy per command** — the proxy IP is re-resolved before every command so a CAME-side address rotation can't silently break the unit
 - **Re-discovery option** in the integration options to refresh all parameters after a Mobile App slot reassignment
 - **Local SIP** used to send the open command to reduce the delay
 
@@ -51,9 +52,11 @@ config/
     └── came_access/
         ├── __init__.py
         ├── api.py
+        ├── brand/
         ├── button.py
         ├── config_flow.py
         ├── const.py
+        ├── diagnostics.py
         ├── manifest.json
         ├── sensor.py
         └── translations/
@@ -146,9 +149,11 @@ Extra state attributes exposed on the **Open Door** button:
 
 Each **AUX** button exposes: `aux_code` (the BPT AUX index that is sent), `last_pressed`, `last_message_status`, and `last_error`.
 
+AUX buttons whose label is just the generic `Aux N` are **disabled by default** — enable them from the entity settings if you actually use those outputs.
+
 ### Diagnostic Sensors
 
-Six diagnostic sensors are created under the device card (hidden by default, visible by enabling them):
+Six static sensors surface the resolved SIP parameters (hidden by default, visible by enabling them):
 
 | Sensor | Description |
 |---|---|
@@ -158,6 +163,23 @@ Six diagnostic sensors are created under the device card (hidden by default, vis
 | `BPT Source Address` | L3 source address of this slot |
 | `BPT Panel Address` | L3 address of the entry panel |
 | `Mobile App Slot` | Human-readable label of the active slot |
+
+In addition, live sensors (polled every 30 s) reflect the runtime state of the last command and the OAuth session — useful for spotting "worked, then stopped after a while" issues:
+
+| Sensor | Description |
+|---|---|
+| `Last Command` | Type of the last command (`open_door` / `aux N`) |
+| `Last Command Result` | `success` / `failed` |
+| `Last Command Error` | Error from the last command, or `none` |
+| `Last Wake-up (xipregister)` | Wake-up status (`200 OK`, `skipped (no device token)`, …) |
+| `Last SIP Register` | Status line from the REGISTER step |
+| `Last SIP Message` | Status line from the MESSAGE step |
+| `Last Busy Retries` | How many 486-Busy retries were used |
+| `Last Command Duration` | Wall-clock duration of the last command, in ms |
+| `SIP Proxy (last resolved)` | Freshly-resolved SIP proxy IP |
+| `SIP Proxy Stale` | Whether the stored proxy IP differs from the freshly-resolved one |
+| `Token Expires In` | Seconds until the OAuth access token expires |
+| `Token Valid` | Whether the current access token is still valid |
 
 ---
 
@@ -185,7 +207,9 @@ TLS connection to the CAME SIP proxy failed. Check:
 
 ### Button does nothing / no error shown
 
-Enable debug logging to see the full SIP exchange:
+Download a diagnostics snapshot first — **Settings → Devices & Services → CAME Access → ⋮ → Download diagnostics**. It contains (with passwords and tokens redacted) the OAuth token state, the full result of the last command, and the stored SIP proxy IP vs a freshly-resolved one.
+
+For the full SIP exchange, enable debug logging:
 
 ```yaml
 # configuration.yaml
@@ -216,7 +240,7 @@ The integration implements the same protocol as the CAME Access mobile app:
 
 1. **OAuth2 password grant** against `https://app.cameconnect.net/api/oauth/token`
 2. **`/api/evo/v1/sites/{id}/plants`** — Bearer-only endpoint that returns the module/feature tree for the site. The integration extracts the Mobile App slot (matched to your account email) for the SIP username and BPT source address, the entry-panel addresses, and the list of AUX outputs. The SIP password is supplied by you (the API no longer returns it).
-3. **`/api/evo/v1/checkdomainip`** — resolves which IP the SIP proxy runs on for this unit's domain
+3. **`/api/evo/v1/checkdomainip`** — resolves which IP the SIP proxy runs on for this unit's domain. This runs before **every** command (not just at setup) and the fresh IP is used for the connection — CAME rotates proxy addresses, so a cached IP would otherwise go stale and stop commands from arriving
 4. **`/api/push/xipregister`** — best-effort signal to wake the unit and register with the proxy (skipped/soft-failed when no device token is available)
 5. **SIP REGISTER + MESSAGE over TLS (port 5061)** — authenticates with Digest MD5 and delivers the `OPEN_DOOR` or `AUX_COMMAND` XML payload
 
@@ -226,7 +250,7 @@ The SIP digest password is `BptX1pM0b1l3` + your SIP password. The AUX command c
 
 ---
 
-## To-Do (seeking help from communnity)
+## To-Do (seeking help from community)
 
 1. [x] **Add** AUX support — one button per AUX output, sending a BPT `AUX_COMMAND` over SIP (tested on an XTS7 X1)
 2. [ ] **Test** on other Units like the 5 inch variant (also no way to test it)
